@@ -45,6 +45,9 @@ pip install -e .
 # Upgrade tinygrad to latest (fixes CUDA issues)
 pip install --upgrade git+https://github.com/tinygrad/tinygrad.git
 
+# Note: setup.py is pinned to tinygrad 0.13.0 (commit afe9fcaec).
+# For a newer HEAD, install from the tinygrad repo directly.
+
 # Start with CUDA backend
 exo --inference-engine tinygrad --chatgpt-api-port 8001 --disable-tui
 ```
@@ -90,6 +93,11 @@ exo --inference-engine tinygrad --chatgpt-api-port 8001 --disable-tui
 ### Node 2+ (Workers)
 ```bash
 exo --inference-engine tinygrad --disable-tui
+```
+
+### Wait for all peers before inference
+```bash
+exo --inference-engine tinygrad --chatgpt-api-port 8001 --wait-for-peers 2 --disable-tui
 ```
 
 **That's it!** Nodes auto-discover via UDP broadcast. No manual configuration.
@@ -147,17 +155,15 @@ curl http://localhost:8001/v1/models
 
 ### Supported Models
 
-All tinygrad-compatible models work:
-
-| Model | Parameters | Min VRAM |
-|-------|------------|----------|
-| Llama 3.2 1B | 1B | 4GB |
-| Llama 3.2 3B | 3B | 8GB |
-| Llama 3.1 8B | 8B | 16GB |
-| Llama 3.1 70B | 70B | 140GB (cluster) |
-| DeepSeek Coder | Various | Varies |
-| Qwen 2.5 | 0.5B-72B | Varies |
-| Mistral 7B | 7B | 14GB |
+| Model | Parameters | Min VRAM | Engine |
+|-------|------------|----------|--------|
+| Llama 3.2 1B | 1B | 4GB | tinygrad + MLX |
+| Llama 3.2 3B | 3B | 8GB | tinygrad + MLX |
+| Llama 3.1 8B | 8B | 16GB | tinygrad + MLX |
+| Llama 3.3 70B | 70B | 140GB (cluster) | tinygrad + MLX |
+| DeepSeek Coder | Various | Varies | MLX only |
+| Qwen 2.5 | 0.5B-72B | Varies | MLX only |
+| Mistral 7B | 7B | 14GB | MLX only |
 
 ## 🔧 Environment Variables
 
@@ -196,6 +202,26 @@ python3 -c "from tinygrad import Device; print(Device.DEFAULT)"
 nvidia-smi --query-gpu=memory.free --format=csv
 ```
 
+## 🧪 Running Tests
+
+```bash
+# Unit tests
+python3 ./test/test_cuda_arch_setup.py
+python3 ./test/test_model_helpers.py
+python3 ./test/test_tokenizers.py
+
+# Inference engine test
+python3 -m exo.inference.test_inference_engine
+```
+
+## 💾 VRAM Management
+
+exo-cuda includes several fixes for stable multi-node inference on limited VRAM:
+
+- **Free before rebuild**: Old model is freed and tinygrad's allocator cache flushed before topology changes
+- **Per-shard weight filtering**: Non-layer weights (embed_tokens, norm, lm_head) are only loaded on nodes that need them
+- **Tied embedding fix**: Models with `tie_word_embeddings=True` correctly load shared weights on the last shard
+
 ## 📊 Performance Tips
 
 1. **Use SXM2 GPUs** - NVLink provides faster inter-GPU communication
@@ -233,67 +259,4 @@ GPL-3.0 (same as original exo)
 
 </div>
 
-## Troubleshooting FAQ
 
-### Installation Issues
-
-**Q: Build fails with CUDA not found**
-A: Ensure CUDA toolkit is installed and `nvcc` is in your PATH:
-```bash
-export PATH=/usr/local/cuda/bin:$PATH
-export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
-```
-
-**Q: CMake can't find CUDA**
-A: Set CUDA_HOME explicitly:
-```bash
-export CUDA_HOME=/usr/local/cuda
-cmake -DCUDA_TOOLKIT_ROOT_DIR=$CUDA_HOME ..
-```
-
-### Runtime Issues
-
-**Q: CUDA out of memory error**
-A: Reduce batch size or model size, or use a GPU with more VRAM.
-
-**Q: Slow performance**
-A: Check GPU utilization with `nvidia-smi`. Ensure you're using the GPU, not CPU fallback.
-
-**Q: Driver version mismatch**
-A: Update NVIDIA drivers to match your CUDA version:
-```bash
-nvidia-smi  # Check current version
-# Update drivers as needed
-```
-
-### Common Errors
-
-**Q: `libcudart.so` not found**
-A: Add CUDA lib to library path:
-```bash
-sudo ldconfig /usr/local/cuda/lib64
-```
-
-**Q: Compilation warnings about deprecated APIs**
-A: These are usually safe to ignore, but consider updating to newer CUDA APIs.
-
-For more help, open an issue with your error message and system details.
-
----
-
-<div align="center">
-
-**[Elyan Labs](https://github.com/Scottcjn)** · 1,882 commits · 97 repos · 1,334 stars · $0 raised
-
-[⭐ Star RustChain](https://github.com/Scottcjn/Rustchain) · [📊 Q1 2026 Traction Report](https://github.com/Scottcjn/Rustchain/blob/main/docs/DEVELOPER_TRACTION_Q1_2026.md) · [Follow @Scottcjn](https://github.com/Scottcjn)
-
-</div>
-
-
----
-
-### Part of the Elyan Labs Ecosystem
-
-- [RustChain](https://rustchain.org) — Proof-of-Antiquity blockchain rewarding vintage hardware
-- [BoTTube](https://bottube.ai) — AI video platform where 119+ agents create content
-- [GitHub](https://github.com/Scottcjn)
