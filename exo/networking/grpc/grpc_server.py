@@ -79,7 +79,7 @@ class GRPCServer(node_service_pb2_grpc.NodeServiceServicer):
       end_layer=request.shard.end_layer,
       n_layers=request.shard.n_layers,
     )
-    tensor = np.frombuffer(request.tensor.tensor_data, dtype=np.dtype(request.tensor.dtype)).reshape(request.tensor.shape)
+    tensor = np.frombuffer(request.tensor.tensor_data, dtype=np.dtype(request.tensor.dtype)).reshape(request.tensor.shape).copy()
     request_id = request.request_id
 
     inference_state = None if request.inference_state is None else self.deserialize_inference_state(request.inference_state)
@@ -96,9 +96,9 @@ class GRPCServer(node_service_pb2_grpc.NodeServiceServicer):
       end_layer=request.shard.end_layer,
       n_layers=request.shard.n_layers,
     )
-    example = np.frombuffer(request.example.tensor_data, dtype=np.dtype(request.example.dtype)).reshape(request.example.shape)
-    target = np.frombuffer(request.target.tensor_data, dtype=np.dtype(request.target.dtype)).reshape(request.target.shape)
-    length = np.frombuffer(request.length.tensor_data, dtype=np.dtype(request.length.dtype)).reshape(request.length.shape)
+    example = np.frombuffer(request.example.tensor_data, dtype=np.dtype(request.example.dtype)).reshape(request.example.shape).copy()
+    target = np.frombuffer(request.target.tensor_data, dtype=np.dtype(request.target.dtype)).reshape(request.target.shape).copy()
+    length = np.frombuffer(request.length.tensor_data, dtype=np.dtype(request.length.dtype)).reshape(request.length.shape).copy()
     train = request.train
     request_id = request.request_id
 
@@ -140,7 +140,7 @@ class GRPCServer(node_service_pb2_grpc.NodeServiceServicer):
     if DEBUG >= 5: print(f"Received SendResult request: {request_id=} {result=} {is_finished=}")
     result = list(result)
     if len(img.tensor_data) > 0:
-      result = np.frombuffer(img.tensor_data, dtype=np.dtype(img.dtype)).reshape(img.shape)
+      result = np.frombuffer(img.tensor_data, dtype=np.dtype(img.dtype)).reshape(img.shape).copy()
     self.node.on_token.trigger_all(request_id, result, is_finished)
     return node_service_pb2.Empty()
 
@@ -158,11 +158,11 @@ class GRPCServer(node_service_pb2_grpc.NodeServiceServicer):
     inference_state = {}
 
     for k, tensor_data in inference_state_proto.tensor_data.items():
-      np_array = np.frombuffer(tensor_data.tensor_data, dtype=tensor_data.dtype).reshape(tensor_data.shape)
+      np_array = np.frombuffer(tensor_data.tensor_data, dtype=tensor_data.dtype).reshape(tensor_data.shape).copy()
       inference_state[k] = mx.array(np_array)
 
     for k, tensor_list in inference_state_proto.tensor_list_data.items():
-      inference_state[k] = [mx.array(np.frombuffer(tensor.tensor_data, dtype=tensor.dtype).reshape(tensor.shape)) for tensor in tensor_list.tensors]
+      inference_state[k] = [mx.array(np.frombuffer(tensor.tensor_data, dtype=tensor.dtype).reshape(tensor.shape).copy()) for tensor in tensor_list.tensors]
 
     if inference_state_proto.other_data_json:
       other_data = json.loads(inference_state_proto.other_data_json)
