@@ -9,8 +9,8 @@ install_requires = [
   "aiohttp==3.10.11",
   "aiohttp_cors==0.7.0",
   "aiofiles==24.1.0",
-  "grpcio==1.68.0",
-  "grpcio-tools==1.80.0",
+  "grpcio>=1.68.0",
+  "grpcio-tools>=1.68.0",
   "Jinja2==3.1.6",
   "numpy==2.0.0",
   "nuitka==2.5.1",
@@ -18,7 +18,7 @@ install_requires = [
   "opencv-python==4.10.0.84",
   "pillow==10.4.0",
   "prometheus-client==0.20.0",
-  "protobuf==5.28.1",
+  "protobuf>=6.31.1",
   "psutil==6.0.0",
   "pydantic==2.9.2",
   "requests==2.32.3",
@@ -29,7 +29,7 @@ install_requires = [
   "transformers==4.46.3",
   "uuid==1.30",
   "uvloop==0.21.0",
-  "tinygrad @ git+https://github.com/tinygrad/tinygrad.git@ec120ce6b9ce8e4ff4b5692566a683ef240e8bc8",
+  "tinygrad @ git+https://github.com/tinygrad/tinygrad.git@afe9fcaec866e451af1524d442f9405f4e410615",
 ]
 
 extras_require = {

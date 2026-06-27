@@ -17,6 +17,7 @@ from exo.download.download_progress import RepoProgressEvent
 from exo.inference.inference_engine import get_inference_engine, InferenceEngine
 from exo.download.shard_download import ShardDownloader
 
+
 class Node:
   def __init__(
     self,
@@ -44,7 +45,7 @@ class Node:
     self.buffered_inputs: Dict[str, List[np.ndarray]] = {}
     self.buffered_partials: Dict[str, List[np.ndarray]] = {}
     self.checkpoints: Dict[str, Dict[str, int]] = {}
-    
+
     self.max_generate_tokens = max_generate_tokens
     self.topology_viz = topology_viz
     self.default_sample_temperature = default_sample_temperature
@@ -110,9 +111,10 @@ class Node:
 
   def get_topology_inference_engines(self) -> List[List[str]]:
     return self.topology_inference_engines_pool
-  
+
   token_count = 0
   first_token_time = 0
+
   async def process_inference_result(
     self,
     shard,
@@ -129,7 +131,11 @@ class Node:
         await self.inference_engine.ensure_shard(shard)
         self.buffered_token_output[request_id][0].append(token.item())
         is_finished = token.item() == self.inference_engine.tokenizer.eos_token_id or is_finished or len(self.buffered_token_output[request_id][0]) >= self.max_generate_tokens
-        if DEBUG >= 2: print(f"[{request_id}] result size: {result.size}, is finished: {is_finished}, buffered tokens: {len(self.buffered_token_output[request_id][0])}")
+        if DEBUG >= 2:
+          logit_min = result.min()
+          logit_max = result.max()
+          logit_argmax = result[:, -1, :].argmax()
+          print(f"[{request_id}] token={token.item()} argmax={logit_argmax} logit_range=[{logit_min:.2f}, {logit_max:.2f}] shape={result.shape} dtype={result.dtype}")
         forward = token.reshape(1, -1)
         intermediate_result = [self.buffered_token_output[request_id][0][-1]]
       else:
@@ -149,10 +155,11 @@ class Node:
       self.outstanding_requests.pop(request_id)
     else:
       self.outstanding_requests[request_id] = "waiting"
-      asyncio.create_task(self.forward_tensor(shard, forward, request_id, self.get_partition_index(offset = 1), inference_state))
+      if DEBUG >= 2:
+        print(f"[{request_id}] forwarding tensor: shard={shard} is_last_layer={shard.is_last_layer()} shape={forward.shape} dtype={forward.dtype} min={forward.min():.4f} max={forward.max():.4f} mean={forward.mean():.4f}")
+      asyncio.create_task(self.forward_tensor(shard, forward, request_id, self.get_partition_index(offset=1), inference_state))
 
-    return  np.array(self.buffered_token_output[request_id][0]) if shard.model_id != 'stable-diffusion-2-1-base' else intermediate_result
-
+    return np.array(self.buffered_token_output[request_id][0]) if shard.model_id != 'stable-diffusion-2-1-base' else intermediate_result
 
   async def process_prompt(
     self,
@@ -178,7 +185,7 @@ class Node:
       )
     )
     start_time = time.perf_counter_ns()
-    resp = await self._process_prompt(base_shard, prompt, request_id, inference_state)
+    resp = await self._process_prompt(shard, prompt, request_id, inference_state)
     end_time = time.perf_counter_ns()
     elapsed_time_ns = end_time - start_time
     asyncio.create_task(
@@ -198,11 +205,10 @@ class Node:
     )
     if DEBUG >= 2: print(f"[{request_id}] process prompt: {base_shard=} {shard=} {prompt=} {elapsed_time_ns=}")
 
-  async def _process_prompt(self, base_shard: Shard, prompt: str, request_id: Optional[str] = None, inference_state: Optional[dict] = None) -> Optional[np.ndarray]:
+  async def _process_prompt(self, shard: Shard, prompt: str, request_id: Optional[str] = None, inference_state: Optional[dict] = None) -> Optional[np.ndarray]:
     if request_id is None:
       request_id = str(uuid.uuid4())
-    shard = self.get_current_shard(base_shard)
-    if DEBUG >= 2: print(f"[{request_id}] process prompt: {base_shard=} {shard=} {prompt=}")
+    if DEBUG >= 2: print(f"[{request_id}] process prompt: {shard=} {prompt=}")
 
     if not shard.is_first_layer():
       if DEBUG >= 2: print(f"[{request_id}] forwarding to next shard: {base_shard=} {shard=} {prompt=}")
@@ -211,7 +217,10 @@ class Node:
       return None
     else:
       self.outstanding_requests[request_id] = "processing"
+      if DEBUG >= 2: print(f"[{request_id}] processing prompt on first layer: {shard=}")
       result, inference_state = await self.inference_engine.infer_prompt(request_id, shard, prompt, inference_state)
+      if DEBUG >= 2:
+        print(f"[{request_id}] prompt result: shape={result.shape} dtype={result.dtype} min={result.min():.4f} max={result.max():.4f} mean={result.mean():.4f}")
       ret = await self.process_inference_result(shard, result, request_id, inference_state)
       return result
 
@@ -219,7 +228,7 @@ class Node:
     self,
     base_shard: Shard,
     example: np.ndarray,
-    target: np.ndarray, 
+    target: np.ndarray,
     length: np.ndarray,
     request_id: Optional[str] = None,
     train: bool = False,
@@ -232,7 +241,7 @@ class Node:
       if request_id is None:
         request_id = str(uuid.uuid4())
       self.outstanding_requests[request_id] = "waiting"
-      loss = await self.forward_example(shard, example, target, length, train, request_id, 0) 
+      loss = await self.forward_example(shard, example, target, length, train, request_id, 0)
     return loss
 
   async def coordinate_save(
@@ -263,7 +272,7 @@ class Node:
     self,
     base_shard: Shard,
     example: np.ndarray,
-    target: np.ndarray, 
+    target: np.ndarray,
     length: np.ndarray,
     train: bool = False,
     request_id: Optional[str] = None,
@@ -308,7 +317,7 @@ class Node:
     self,
     base_shard: Shard,
     example: np.ndarray,
-    target: np.ndarray, 
+    target: np.ndarray,
     length: np.ndarray,
     train: bool = False,
     request_id: Optional[str] = None,
@@ -327,7 +336,7 @@ class Node:
           self.outstanding_requests[request_id] = "preprocessing"
           step, _ = await self.inference_engine.infer_tensor(request_id, shard, example)
           self.outstanding_requests[request_id] = "waiting"
-          loss, backgrad = await self.forward_example(shard, step, target, length, train, request_id, self.get_partition_index(offset = 1))
+          loss, backgrad = await self.forward_example(shard, step, target, length, train, request_id, self.get_partition_index(offset=1))
           self.outstanding_requests[request_id] = "training"
           partial_loss, grad = await self.inference_engine.train(request_id, shard, example, backgrad, length, loss="back_gradient")
         self.outstanding_requests.pop(request_id)
@@ -343,7 +352,7 @@ class Node:
           self.outstanding_requests[request_id] = "preprocessing"
           step, _ = await self.inference_engine.infer_tensor(request_id, shard, example)
           self.outstanding_requests[request_id] = "waiting"
-          loss = await self.forward_example(shard, step, target, length, train, request_id, self.get_partition_index(offset = 1))
+          loss = await self.forward_example(shard, step, target, length, train, request_id, self.get_partition_index(offset=1))
         self.outstanding_requests.pop(request_id)
         return loss
     except Exception as e:
@@ -351,7 +360,7 @@ class Node:
       print(f"Error processing example for shard {shard}: {e}")
       traceback.print_exc()
       return None
-        
+
   async def process_tensor(
     self,
     base_shard: Shard,
@@ -378,15 +387,17 @@ class Node:
     shard = self.get_current_shard(base_shard)
 
     try:
+      if DEBUG >= 2:
+        print(f"[{request_id}] received tensor: shard={shard} shape={tensor.shape} dtype={tensor.dtype} min={tensor.min():.4f} max={tensor.max():.4f} mean={tensor.mean():.4f}")
       self.outstanding_requests[request_id] = "processing"
       result, inference_state = await self.inference_engine.infer_tensor(request_id, shard, tensor, inference_state)
-      ret = await self.process_inference_result(shard, result, request_id, inference_state) 
+      ret = await self.process_inference_result(shard, result, request_id, inference_state)
       return ret
     except Exception as e:
       self.outstanding_requests.pop(request_id)
       print(f"Error processing tensor for shard {shard}: {e}")
       traceback.print_exc()
-  
+
   async def forward_example(
     self,
     base_shard: Shard,
@@ -428,7 +439,7 @@ class Node:
         raise ValueError(f"Peer for {target_index} not found")
       if DEBUG >= 1: print(f"Sending prompt to {target_peer.id()}: {prompt}")
       await target_peer.send_prompt(next_shard, prompt, request_id=request_id, inference_state=inference_state)
-  
+
   async def forward_tensor(
     self,
     base_shard: Shard,
@@ -458,7 +469,7 @@ class Node:
     current_partition_index = next((i for i, p in enumerate(partitions) if p.node_id == self.id), None)
     if current_partition_index is None:
       raise ValueError(f"No current partition found for node: {self.id}")
-    return (current_partition_index + offset) % len(partitions)
+    return (current_partition_index+offset) % len(partitions)
 
   def get_current_shard(self, base_shard: Shard, index: Optional[int] = None) -> Shard:
     if index is None:
@@ -584,9 +595,10 @@ class Node:
   def trigger_on_token_callbacks(self, request_id: str, tokens: List[int], is_finished: bool) -> None:
     if DEBUG >= 2: print(f"Triggering all on_token callbacks with {request_id=} {tokens=} {is_finished=}")
     self.on_token.trigger_all(request_id, tokens, is_finished)
-  
+
   async def broadcast_result(self, request_id: str, result: List[int], is_finished: bool) -> None:
     if DEBUG >= 2: print(f"Broadcasting result: {request_id=} {result=} {is_finished=}")
+
     async def send_result_to_peer(peer):
       try:
         await asyncio.wait_for(peer.send_result(request_id, result, is_finished), timeout=15.0)
@@ -620,8 +632,8 @@ class Node:
 
   def handle_stable_diffusion(self, inference_state, result):
     if inference_state['is_step_finished']:
-      inference_state['step']+=1
-    progress = [inference_state['step'],inference_state['total_steps']]
+      inference_state['step'] += 1
+    progress = [inference_state['step'], inference_state['total_steps']]
     intermediate_result = result
     if progress[0] == progress[1]:
       intermediate_result = result
