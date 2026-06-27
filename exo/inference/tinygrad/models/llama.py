@@ -51,6 +51,7 @@ def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
   # NOTE: this is different from x.repeat((1, 1, n_rep, 1))
   return x.repeat((1, 1, 1, n_rep)).reshape(bs, seqlen, n_kv_heads*n_rep, head_dim)
 
+
 class Attention:
   def __init__(self, dim, n_heads, n_kv_heads, max_context, linear=nn.Linear):
     self.n_heads = n_heads
@@ -64,7 +65,7 @@ class Attention:
     self.wv = linear(dim, self.n_kv_heads*self.head_dim, bias=False)
     self.wo = linear(self.n_heads*self.head_dim, dim, bias=False)
 
-  def __call__(self, x: Tensor, start_pos: Union[Variable, int], freqs_cis: Tensor, mask: Optional[Tensor], cache: Optional[Tensor]=None) -> Tensor:
+  def __call__(self, x: Tensor, start_pos: Union[Variable, int], freqs_cis: Tensor, mask: Optional[Tensor], cache: Optional[Tensor] = None) -> Tensor:
     if getenv("WQKV"):
       if not hasattr(self, 'wqkv'): self.wqkv = Tensor.cat(self.wq.weight, self.wk.weight, self.wv.weight)
       xqkv = x @ self.wqkv.T
@@ -114,7 +115,7 @@ class TransformerBlock:
     self.attention_norm = nn.RMSNorm(dim, norm_eps)
     self.ffn_norm = nn.RMSNorm(dim, norm_eps)
 
-  def __call__(self, x: Tensor, start_pos: Union[Variable, int], freqs_cis: Tensor, mask: Optional[Tensor], cache: Optional[Tensor]=None):
+  def __call__(self, x: Tensor, start_pos: Union[Variable, int], freqs_cis: Tensor, mask: Optional[Tensor], cache: Optional[Tensor] = None):
     h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask, cache=cache)
     return (h + self.feed_forward(self.ffn_norm(h))).contiguous()
 
@@ -191,7 +192,8 @@ class Transformer:
     rope_scaling: Optional[Dict[str, float]] = None,
     tie_word_embeddings=False,
   ):
-    self.layers = [TransformerBlock(dim, hidden_dim, n_heads, n_kv_heads, norm_eps, max_context, linear, feed_forward=feed_forward) for _ in range(n_layers)]
+    self.layers = [TransformerBlock(dim, hidden_dim, n_heads, n_kv_heads, norm_eps, max_context, linear, feed_forward=feed_forward)
+                   for _ in range(shard.start_layer, shard.end_layer + 1)] if shard else []
     self.norm = nn.RMSNorm(dim, norm_eps)
     self.tok_embeddings = nn.Embedding(vocab_size, dim)
     self.output = nn.Linear(dim, vocab_size, bias=False)
@@ -210,9 +212,8 @@ class Transformer:
     h = x
 
     if cache is None:
-      cache = [None for _ in range(self.shard.start_layer, self.shard.end_layer + 1)]  
-    for i, c in zip(range(self.shard.start_layer, self.shard.end_layer + 1), cache):
-      layer = self.layers[i]
+      cache = [None for _ in range(len(self.layers))]
+    for layer, c in zip(self.layers, cache):
       h = layer(h, start_pos, freqs_cis, mask, cache=c)
 
     if self.shard.is_last_layer():
@@ -238,6 +239,7 @@ class Transformer:
     h = self.embed(x)
     return self.forward(h, start_pos, cache=cache)
 
+
 class TransformerShard:
   def __init__(
     self,
@@ -246,14 +248,16 @@ class TransformerShard:
     jit: bool = True,
   ):
     shardrange = range(shard.start_layer, shard.end_layer + 1)
-    self.layers = [layer for layer, n in zip(base.layers, range(shard.n_layers)) if n in shardrange]
-    self.norm = base.norm 
-    self.tok_embeddings = base.tok_embeddings
+    self.layers = base.layers
+    self.norm = base.norm if shard.is_last_layer() else None
+    self.tok_embeddings = base.tok_embeddings if shard.is_first_layer() else None
     self.embed = (lambda x: self.tok_embeddings(x)) if shard.is_first_layer() else (lambda x: x)
-    self.output = base.output
-    self.post = (lambda x: self.output(x)) if shard.is_last_layer() else (lambda x: x)
+    self.output = base.output if shard.is_last_layer() else None
+    # .float() is critical: Transformer.forward_base casts logits to float32 before softmax.
+    # Without it, float16 logits lack precision for correct argmax (range ~100s-1000s).
+    self.post = (lambda x: self.output(self.norm(x)).float().realize()) if shard.is_last_layer() else (lambda x: x)
     self.max_context = base.max_context
-    self.null_cache = [None for _ in shardrange] 
+    self.null_cache = [None for _ in shardrange]
     self.freqs_cis = base.freqs_cis
     self.forward_jit = TinyJit(self.forward_base) if jit else None
 
@@ -277,26 +281,29 @@ class TransformerShard:
     # TODO: better way to handle the first call v.s. the rest?
     h = self.embed(x)
     return self.forward(h, start_pos, cache=self.null_cache if cache is None else cache)
-      
+
+
 # *** helpers ***
 
 
-def convert_from_huggingface(weights: Dict[str, Tensor], model: Transformer, n_heads: int, n_kv_heads: int):
+def convert_from_huggingface(weights: Dict[str, Tensor], model: Transformer, n_heads: int, n_kv_heads: int, shard: Optional[Shard] = None):
   def permute(v: Tensor, n_heads: int):
     return v.reshape(n_heads, 2, v.shape[0] // n_heads // 2, v.shape[1]).transpose(1, 2).reshape(*v.shape[:2])
 
+  n_layers = len(model.layers)
+  layer_offset = shard.start_layer if shard else 0
   keymap = {
     "model.embed_tokens.weight": "tok_embeddings.weight",
-    **{f"model.layers.{l}.input_layernorm.weight": f"layers.{l}.attention_norm.weight"
-       for l in range(len(model.layers))},
-    **{f"model.layers.{l}.self_attn.{x}_proj.weight": f"layers.{l}.attention.w{x}.weight"
+    **{f"model.layers.{l + layer_offset}.input_layernorm.weight": f"layers.{l}.attention_norm.weight"
+       for l in range(n_layers)},
+    **{f"model.layers.{l + layer_offset}.self_attn.{x}_proj.weight": f"layers.{l}.attention.w{x}.weight"
        for x in ["q", "k", "v", "o"]
-       for l in range(len(model.layers))},
-    **{f"model.layers.{l}.post_attention_layernorm.weight": f"layers.{l}.ffn_norm.weight"
-       for l in range(len(model.layers))},
-    **{f"model.layers.{l}.mlp.{x}_proj.weight": f"layers.{l}.feed_forward.w{y}.weight"
+       for l in range(n_layers)},
+    **{f"model.layers.{l + layer_offset}.post_attention_layernorm.weight": f"layers.{l}.ffn_norm.weight"
+       for l in range(n_layers)},
+    **{f"model.layers.{l + layer_offset}.mlp.{x}_proj.weight": f"layers.{l}.feed_forward.w{y}.weight"
        for x, y in {"gate": "1", "down": "2", "up": "3"}.items()
-       for l in range(len(model.layers))},
+       for l in range(n_layers)},
     "model.norm.weight": "norm.weight",
     "lm_head.weight": "output.weight",
   }
@@ -335,10 +342,7 @@ def fix_bf16(weights: Dict[Any, Tensor]):
     return result
   if Device.DEFAULT == "CLANG":
     # TODO: without casting to float16, 70B llama OOM on tinybox.
-    return {
-      k: (v.llvm_bf16_cast(dtypes.float32).to(v.device) if v.dtype == dtypes.bfloat16 else v)
-      for k, v in weights.items()
-    }
+    return {k: (v.llvm_bf16_cast(dtypes.float32).to(v.device) if v.dtype == dtypes.bfloat16 else v) for k, v in weights.items()}
   if getenv("SUPPORT_BF16", 1):
     # TODO: without casting to float16, 70B llama OOM on tinybox.
     return {k: v.cast(dtypes.float16) if v.dtype == dtypes.bfloat16 else v for k, v in weights.items()}
