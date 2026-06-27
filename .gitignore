@@ -173,7 +173,3 @@ cython_debug/
 .aider*
 
 exo/tinychat/images/*.png
-
-logs/
-*.py~
-.opencode/

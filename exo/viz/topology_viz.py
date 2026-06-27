@@ -347,8 +347,7 @@ class TopologyViz:
       summary.add_row("")  # Empty row for spacing
 
       for file_path, file_progress in download_progress.file_progress.items():
-        # total can be 0 at start of download (size not yet known); guard against div by zero
-        if file_progress.status != "complete" and file_progress.total > 0:
+        if file_progress.status != "complete":
           progress = int(file_progress.downloaded/file_progress.total*30)
           bar = f"[{'=' * progress}{' ' * (30 - progress)}]"
           percentage = f"{file_progress.downloaded / file_progress.total * 100:.0f}%"

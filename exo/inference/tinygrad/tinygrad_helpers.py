@@ -47,12 +47,6 @@ def load(fn: str, shard: Shard):
     for k in list(weight_map):
       if (n := re.search(r"\.(\d+)\.", k)) and not (shard.start_layer <= int(n.group(1)) <= shard.end_layer):
           del weight_map[k]
-    # Keep embed_tokens on last shard even if not first: needed for tied output.weight
-    if not shard.is_first_layer() and not shard.is_last_layer():
-      weight_map.pop("model.embed_tokens.weight", None)
-    if not shard.is_last_layer():
-      weight_map.pop("model.norm.weight", None)
-      weight_map.pop("lm_head.weight", None)
     return weight_map
   else:
     return torch_load(fn)

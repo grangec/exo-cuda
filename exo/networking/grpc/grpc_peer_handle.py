@@ -128,7 +128,7 @@ class GRPCPeerHandle(PeerHandle):
     if not response.tensor_data or not response.shape or not response.dtype:
       return None
 
-    return np.frombuffer(response.tensor_data, dtype=np.dtype(response.dtype)).reshape(response.shape).copy()
+    return np.frombuffer(response.tensor_data, dtype=np.dtype(response.dtype)).reshape(response.shape)
 
   async def send_example(self, shard: Shard, example: np.ndarray, target: np.ndarray, length: np.ndarray, train: bool, request_id: Optional[str] = None) -> Optional[np.array]:
     request = node_service_pb2.ExampleRequest(
@@ -147,7 +147,7 @@ class GRPCPeerHandle(PeerHandle):
     response = await self.stub.SendExample(request)
     loss = response.loss
     if train and not shard.is_first_layer():
-      grads = np.frombuffer(response.grads.tensor_data, dtype=np.dtype(response.grads.dtype)).reshape(response.grads.shape).copy()
+      grads = np.frombuffer(response.grads.tensor_data, dtype=np.dtype(response.grads.dtype)).reshape(response.grads.shape)
       return loss, grads
     else:
       return loss
@@ -168,7 +168,7 @@ class GRPCPeerHandle(PeerHandle):
     if not response.tensor_data or not response.shape or not response.dtype:
       return None
 
-    return np.frombuffer(response.tensor_data, dtype=np.dtype(response.dtype)).reshape(response.shape).copy()
+    return np.frombuffer(response.tensor_data, dtype=np.dtype(response.dtype)).reshape(response.shape)
 
   async def collect_topology(self, visited: set[str], max_depth: int) -> Topology:
     request = node_service_pb2.CollectTopologyRequest(visited=visited, max_depth=max_depth)

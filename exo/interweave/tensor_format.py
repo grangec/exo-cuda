@@ -195,7 +195,7 @@ class UniversalTensor:
     def to_numpy(self) -> np.ndarray:
         """Convert to numpy array"""
         np_dtype = self.dtype.to_numpy()
-        arr = np.frombuffer(self.data, dtype=np_dtype).copy()
+        arr = np.frombuffer(self.data, dtype=np_dtype)
 
         # Handle packed i4
         if self.dtype == DType.I4:
